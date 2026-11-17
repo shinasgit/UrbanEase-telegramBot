@@ -14,6 +14,9 @@ from telegram.ext import (
     filters,
 )
 
+# Import AI Search Service
+from app.search_service import search_from_message, search_without_area
+
 # Import database functions
 from app.database import (
     get_all_properties,
@@ -1028,26 +1031,228 @@ def execute_natural_language_search(intent_data: dict, city: str, budget: float 
     return "🤔 I couldn't understand what you're looking for."
 
 
-# 10. Natural Language Message Handler
+def get_friendly_search_label(search_data: dict) -> str:
+    """Returns a natural plural label like 'plumbers', 'washing machines', 'bikes', 'PGs'."""
+    intent = search_data.get("intent")
+    if intent == "helper_search":
+        st = search_data.get("service_type")
+        if not st:
+            return "service providers"
+        if st.lower() == "ac repair":
+            return "AC repair specialists"
+        if st.lower().endswith("s"):
+            return f"{st.lower()} providers"
+        return f"{st.lower()}s"
+
+    elif intent == "property_search":
+        pt = search_data.get("property_type")
+        if pt:
+            if pt.upper() == "PG":
+                return "PGs"
+            if pt.lower() == "flat":
+                return "flats"
+            if pt.lower() == "house":
+                return "houses"
+            if pt.lower() == "hostel":
+                return "hostels"
+            return f"{pt.lower()} properties"
+        return "properties"
+
+    elif intent == "rental_item_search":
+        item_name = search_data.get("item_name")
+        if item_name:
+            il = item_name.lower()
+            if il.endswith("s"):
+                return il
+            return f"{il}s"
+        cat = search_data.get("category")
+        if cat and cat.lower() == "furniture":
+            return "furniture items"
+        elif cat and cat.lower() == "appliance":
+            return "appliances"
+        return "rental items"
+
+    elif intent == "vehicle_search":
+        vt = search_data.get("vehicle_type")
+        if vt and vt.lower() == "bike":
+            return "bikes"
+        elif vt and vt.lower() == "car":
+            return "cars"
+        return "vehicles"
+
+    return "listings"
+
+
+def get_area_fallback_keyboard() -> InlineKeyboardMarkup:
+    """Builds inline keyboard asking whether to show results from other areas in the city."""
+    keyboard = [
+        [InlineKeyboardButton("✅ Show other areas", callback_data="show_other_areas")],
+        [InlineKeyboardButton("❌ No thanks", callback_data="cancel_area_fallback")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+# 10. AI-Powered Natural Language Search & Formatting
+def format_ai_search_results(
+    understanding: dict,
+    results: list[dict],
+    search_output: dict | None = None,
+) -> str:
+    """
+    Formats PostgreSQL search results returned from search_from_message()
+    into clean, user-friendly markdown for Telegram.
+    """
+    intent = understanding.get("intent", "unknown")
+    cards = []
+
+    header = ""
+    if search_output:
+        if search_output.get("search_area") and not search_output.get("is_fallback"):
+            s_area = search_output.get("search_area")
+            header = f"📍 *Listings in {s_area}:*\n\n"
+
+    for item in results:
+        # 1. Properties
+        if intent == "property_search":
+            title = item.get("title", "Property Listing")
+            ptype = item.get("property_type", "Property")
+            area = item.get("area", "")
+            city = item.get("city", "")
+            location = f"{area}, {city}".strip(", ") or "Location not specified"
+            rent = item.get("monthly_rent")
+            rent_text = f"₹{int(rent):,}/month" if rent is not None else "Contact for price"
+            bedrooms = item.get("bedrooms")
+            bedroom_line = f"🛏️ Bedrooms: {bedrooms}\n" if bedrooms is not None else ""
+            description = (item.get("description") or "").strip()
+            desc_line = f"\n{description}" if description else ""
+            icon = get_property_type_icon(ptype)
+
+            card = (
+                f"{icon} *{title}*\n\n"
+                f"📍 {location}\n"
+                f"🏢 Type: {ptype}\n"
+                f"💰 Rent: {rent_text}\n"
+                f"{bedroom_line}"
+                f"{desc_line}"
+            )
+            cards.append(card)
+
+        # 2. Vehicles
+        elif intent == "vehicle_search":
+            name = item.get("name", "Vehicle Listing")
+            brand = item.get("brand", "N/A")
+            vtype = item.get("vehicle_type", "Vehicle")
+            area = item.get("area", "")
+            city = item.get("city", "")
+            location = f"{area}, {city}".strip(", ") or "Location not specified"
+            rent = item.get("daily_rent")
+            rent_text = f"₹{int(rent):,}/day" if rent is not None else "Contact for price"
+            description = (item.get("description") or "").strip()
+            desc_line = f"\n{description}" if description else ""
+            icon = get_vehicle_type_icon(vtype)
+
+            card = (
+                f"{icon} *{name}*\n\n"
+                f"📍 {location}\n"
+                f"🚘 Type: {vtype}\n"
+                f"🏷️ Brand: {brand}\n"
+                f"💰 Rent: {rent_text}\n"
+                f"{desc_line}"
+            )
+            cards.append(card)
+
+        # 3. Rental Items (Appliances / Furniture)
+        elif intent == "rental_item_search":
+            name = item.get("name", "Rental Item")
+            cat = item.get("category", "Item")
+            area = item.get("area", "")
+            city = item.get("city", "")
+            location = f"{area}, {city}".strip(", ") or "Location not specified"
+            rent = item.get("monthly_rent")
+            rent_text = f"₹{int(rent):,}/month" if rent is not None else "Contact for price"
+            description = (item.get("description") or "").strip()
+            desc_line = f"\n{description}" if description else ""
+            icon = get_rental_item_icon(name, cat)
+
+            card = (
+                f"{icon} *{name}*\n\n"
+                f"📍 {location}\n"
+                f"📦 Category: {cat}\n"
+                f"💰 Rent: {rent_text}\n"
+                f"{desc_line}"
+            )
+            cards.append(card)
+
+        # 4. Helpers (Service Providers)
+        elif intent == "helper_search":
+            name = item.get("name", "Service Provider")
+            stype = item.get("service_type", "Helper")
+            area = item.get("area", "")
+            city = item.get("city", "")
+            location = f"{area}, {city}".strip(", ") or "Location not specified"
+            phone = item.get("phone") or "Contact desk"
+            description = (item.get("description") or "").strip()
+            desc_line = f"\n{description}" if description else ""
+            icon = get_service_icon(stype)
+
+            card = (
+                f"{icon} *{name}*\n\n"
+                f"📍 {location}\n"
+                f"🏷️ Service: {stype}\n"
+                f"📞 Contact: {phone}\n"
+                f"{desc_line}"
+            )
+            cards.append(card)
+
+    divider = "\n\n────────────────────\n\n"
+    return header + divider.join(cards)
+
+
 async def handle_natural_language_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles freeform text messages sent by the user using rule-based keyword matching."""
+    """
+    Handles freeform text messages sent by the user using the AI Search Service:
+      Telegram Message -> search_from_message() -> Ollama AI -> PostgreSQL -> Formatted Telegram reply.
+    """
     if not update.message or not update.message.text:
         return
 
     user_text = update.message.text.strip()
 
-    # Step 1: Detect User Intent
-    intent_data = detect_user_intent(user_text)
+    # Indicate typing state in Telegram while AI & database query executes
+    try:
+        await update.message.chat.send_action("typing")
+    except Exception:
+        pass
 
-    # Step 6: Handle Unknown Requests
-    if not intent_data:
+    # Call AI search service with error protection
+    try:
+        search_output = search_from_message(user_text)
+    except Exception as exc:
+        print(f"❌ Error during AI search processing: {exc}", file=sys.stderr)
+        await update.message.reply_text(
+            text=(
+                "⚠️ *Something went wrong while processing your request.*\n\n"
+                "Please try again in a moment, or use the menu buttons below."
+            ),
+            reply_markup=get_back_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    status = search_output.get("status")
+    understanding = search_output.get("understanding", {})
+    results = search_output.get("results", [])
+
+    # Case 1: Unknown intent or general conversation
+    if status == "unknown_intent" or understanding.get("intent") == "unknown":
         unknown_message = (
-            "🤔 I couldn't understand what you're looking for.\n\n"
-            "Try something like:\n\n"
-            '🏠 "Find a flat in Kochi under 20000"\n'
-            '🚗 "Find a bike in Bangalore"\n'
-            '🛋️ "I need a washing machine in Kochi"\n'
-            '🔧 "Find an electrician in Kochi"'
+            "🏙️ *I can help you find:*\n\n"
+            "🏠 Houses, Flats, PGs & Hostels\n"
+            "🛋️ Rental Appliances & Furniture\n"
+            "🚗 Rental Vehicles\n"
+            "🔧 Electricians, Plumbers & Other Helpers\n\n"
+            "Try a message like:\n"
+            '"I need a flat in Kochi under 20000"'
         )
         await update.message.reply_text(
             text=unknown_message,
@@ -1055,41 +1260,70 @@ async def handle_natural_language_message(update: Update, context: ContextTypes.
         )
         return
 
-    # Step 2: Extract the City
-    city = extract_city(user_text)
-    budget = extract_budget(user_text)
-
-    # If city is missing, ask the user to pick one
-    if not city:
-        # Save intent data and budget for resumption when city is selected
-        context.user_data["pending_nl_search"] = {
-            "intent_data": intent_data,
-            "budget": budget,
-        }
-        prompt_text = (
-            "📍 *Which city are you looking in?*\n\n"
-            "Currently, I can search for listings in *Kochi* and *Bangalore*.\n"
-            "Please select your city below:"
-        )
+    # Case 2: AI communication or database error
+    if status == "error":
         await update.message.reply_text(
-            text=prompt_text,
-            reply_markup=get_nl_city_prompt_keyboard(),
+            text=(
+                "⚠️ *Unable to complete search right now.*\n\n"
+                "We encountered an issue connecting to the search service or database. Please try again."
+            ),
+            reply_markup=get_back_keyboard(),
             parse_mode=ParseMode.MARKDOWN,
         )
         return
 
-    # Step 4 & 5: Execute Search & Display Results
-    results_message = execute_natural_language_search(
-        intent_data=intent_data,
-        city=city,
-        budget=budget,
-    )
+    # Case 3: No results in requested area -> Prompt for confirmation before city-wide fallback!
+    if status == "area_not_found":
+        search_data = search_output.get("search_data", {})
+        # Store pending fallback search data separately per user/chat
+        context.user_data["pending_fallback"] = search_data
 
-    await update.message.reply_text(
-        text=results_message,
-        reply_markup=get_back_keyboard(),
-        parse_mode=ParseMode.MARKDOWN,
-    )
+        label = get_friendly_search_label(search_data)
+        area = search_data.get("area") or "this area"
+        city = search_data.get("city") or "the city"
+
+        prompt_text = (
+            f"⚠️ No {label} found in *{area}*.\n\n"
+            f"Would you like to see available {label} from other areas in *{city}*?"
+        )
+        await update.message.reply_text(
+            text=prompt_text,
+            reply_markup=get_area_fallback_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    # Case 4: No matching listings found
+    if status == "no_results" or not results:
+        no_results_message = (
+            "😔 Sorry, I couldn't find any matching results.\n\n"
+            "Try changing the city, category, or budget."
+        )
+        await update.message.reply_text(
+            text=no_results_message,
+            reply_markup=get_back_keyboard(),
+        )
+        return
+
+    # Case 4: Results found - format and return
+    results_text = format_ai_search_results(understanding, results, search_output)
+
+    # Protect against Telegram message character limit (4096 chars)
+    if len(results_text) > 4000:
+        results_text = results_text[:3950] + "\n\n_(List truncated. Please refine your search.)_"
+
+    try:
+        await update.message.reply_text(
+            text=results_text,
+            reply_markup=get_back_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception:
+        # Fallback to plain text if markdown formatting encounters unescaped characters
+        await update.message.reply_text(
+            text=results_text.replace("*", "").replace("_", ""),
+            reply_markup=get_back_keyboard(),
+        )
 
 
 # 11. Command & Callback Handlers
@@ -1122,6 +1356,60 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await query.edit_message_text(
             text=WELCOME_TEXT,
             reply_markup=get_main_menu_keyboard(),
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+    # -------------------------------------------------------------
+    # Area Fallback Confirmation Handlers
+    # -------------------------------------------------------------
+    elif data == "show_other_areas":
+        # Retrieve and clear the pending search state for this user
+        pending_search = context.user_data.pop("pending_fallback", None)
+        if not pending_search:
+            await query.edit_message_text(
+                text="⚠️ This search confirmation has expired or was already used. Please start a new search.",
+                reply_markup=get_back_keyboard(),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        fallback_output = search_without_area(pending_search)
+        results = fallback_output.get("results", [])
+        city = pending_search.get("city") or "the city"
+        label = get_friendly_search_label(pending_search)
+
+        if not results:
+            await query.edit_message_text(
+                text=f"😔 Sorry, no matching {label} were found in {city} either.\n\nTry searching for another category or budget.",
+                reply_markup=get_back_keyboard(),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        header = f"📍 *Available {label} from other areas in {city}:*\n\n"
+        results_text = header + format_ai_search_results(pending_search, results)
+
+        if len(results_text) > 4000:
+            results_text = results_text[:3950] + "\n\n_(List truncated. Please refine your search.)_"
+
+        try:
+            await query.edit_message_text(
+                text=results_text,
+                reply_markup=get_back_keyboard(),
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            await query.edit_message_text(
+                text=results_text.replace("*", "").replace("_", ""),
+                reply_markup=get_back_keyboard(),
+            )
+
+    elif data == "cancel_area_fallback":
+        # Clear the pending search state for this user
+        context.user_data.pop("pending_fallback", None)
+        await query.edit_message_text(
+            text="No problem! You can try searching for another area or service. 😊",
+            reply_markup=get_back_keyboard(),
             parse_mode=ParseMode.MARKDOWN,
         )
 

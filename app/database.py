@@ -95,17 +95,23 @@ def get_unique_property_types() -> list[str] | None:
 
 
 def search_properties(
-    city: str,
+    city: str | None = None,
     property_type: str | None = None,
     min_budget: float | None = None,
     max_budget: float | None = None,
+    area: str | None = None,
 ) -> list[dict] | None:
     """
-    Retrieves properties filtered by city, property_type, and budget range.
+    Retrieves properties filtered by city, property_type, budget range, and optional area.
+    If a filter field is None, that filter is omitted.
     Uses parameterized SQL queries safely to prevent SQL injection.
     """
-    conditions = ["LOWER(city) = LOWER(:city)"]
-    params: dict = {"city": city}
+    conditions = []
+    params: dict = {}
+
+    if city:
+        conditions.append("LOWER(city) = LOWER(:city)")
+        params["city"] = city
 
     if property_type and property_type.upper() != "ALL":
         conditions.append("LOWER(property_type) = LOWER(:property_type)")
@@ -119,12 +125,20 @@ def search_properties(
         conditions.append("monthly_rent <= :max_budget")
         params["max_budget"] = max_budget
 
-    where_clause = " AND ".join(conditions)
+    if area:
+        conditions.append("LOWER(area) LIKE LOWER(:area_pattern)")
+        params["area_pattern"] = f"%{area.strip()}%"
+        params["exact_area"] = area.strip()
+        order_clause = "CASE WHEN LOWER(area) = LOWER(:exact_area) THEN 0 ELSE 1 END ASC, monthly_rent ASC, id ASC"
+    else:
+        order_clause = "monthly_rent ASC, id ASC"
+
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
     query = text(f"""
         SELECT id, title, property_type, city, area, monthly_rent, bedrooms, description
         FROM properties
         WHERE {where_clause}
-        ORDER BY monthly_rent ASC, id ASC
+        ORDER BY {order_clause}
     """)
 
     try:
@@ -221,16 +235,22 @@ def get_rental_items(category: str, city: str) -> list[dict] | None:
 
 
 def search_rental_items_nl(
-    city: str,
+    city: str | None = None,
     category: str | None = None,
     item_keyword: str | None = None,
+    area: str | None = None,
 ) -> list[dict] | None:
     """
-    Searches rental items using city, category, and optional name keyword matching.
+    Searches rental items using city, category, optional name keyword, and optional area matching.
+    If a filter field is None, that filter is omitted.
     Used for Natural Language search.
     """
-    conditions = ["LOWER(city) = LOWER(:city)", "available = TRUE"]
-    params: dict = {"city": city}
+    conditions = ["available = TRUE"]
+    params: dict = {}
+
+    if city:
+        conditions.append("LOWER(city) = LOWER(:city)")
+        params["city"] = city
 
     if category:
         conditions.append("LOWER(category) = LOWER(:category)")
@@ -240,12 +260,20 @@ def search_rental_items_nl(
         conditions.append("(LOWER(name) LIKE LOWER(:item_kw) OR LOWER(description) LIKE LOWER(:item_kw))")
         params["item_kw"] = f"%{item_keyword}%"
 
+    if area:
+        conditions.append("LOWER(area) LIKE LOWER(:area_pattern)")
+        params["area_pattern"] = f"%{area.strip()}%"
+        params["exact_area"] = area.strip()
+        order_clause = "CASE WHEN LOWER(area) = LOWER(:exact_area) THEN 0 ELSE 1 END ASC, monthly_rent ASC, id ASC"
+    else:
+        order_clause = "monthly_rent ASC, id ASC"
+
     where_clause = " AND ".join(conditions)
     query = text(f"""
         SELECT id, name, category, city, area, monthly_rent, description, available
         FROM rental_items
         WHERE {where_clause}
-        ORDER BY monthly_rent ASC, id ASC
+        ORDER BY {order_clause}
     """)
     try:
         with engine.connect() as connection:
@@ -341,16 +369,22 @@ def get_vehicles(vehicle_type: str, city: str) -> list[dict] | None:
 
 
 def search_vehicles_nl(
-    city: str,
+    city: str | None = None,
     vehicle_type: str | None = None,
     vehicle_keyword: str | None = None,
+    area: str | None = None,
 ) -> list[dict] | None:
     """
-    Searches vehicles using city, vehicle_type, and optional name keyword matching.
+    Searches vehicles using city, vehicle_type, optional name keyword, and optional area matching.
+    If a filter field is None, that filter is omitted.
     Used for Natural Language search.
     """
-    conditions = ["LOWER(city) = LOWER(:city)", "available = TRUE"]
-    params: dict = {"city": city}
+    conditions = ["available = TRUE"]
+    params: dict = {}
+
+    if city:
+        conditions.append("LOWER(city) = LOWER(:city)")
+        params["city"] = city
 
     if vehicle_type and vehicle_type.upper() != "ALL":
         conditions.append("LOWER(vehicle_type) = LOWER(:vtype)")
@@ -360,12 +394,20 @@ def search_vehicles_nl(
         conditions.append("(LOWER(name) LIKE LOWER(:vkw) OR LOWER(brand) LIKE LOWER(:vkw))")
         params["vkw"] = f"%{vehicle_keyword}%"
 
+    if area:
+        conditions.append("LOWER(area) LIKE LOWER(:area_pattern)")
+        params["area_pattern"] = f"%{area.strip()}%"
+        params["exact_area"] = area.strip()
+        order_clause = "CASE WHEN LOWER(area) = LOWER(:exact_area) THEN 0 ELSE 1 END ASC, daily_rent ASC, id ASC"
+    else:
+        order_clause = "daily_rent ASC, id ASC"
+
     where_clause = " AND ".join(conditions)
     query = text(f"""
         SELECT id, name, vehicle_type, brand, city, area, daily_rent, description, available
         FROM vehicles
         WHERE {where_clause}
-        ORDER BY daily_rent ASC, id ASC
+        ORDER BY {order_clause}
     """)
     try:
         with engine.connect() as connection:
@@ -435,32 +477,717 @@ def get_service_cities(service_type: str) -> list[str] | None:
         return None
 
 
-def get_service_providers(service_type: str, city: str) -> list[dict] | None:
+def search_service_providers(
+    service_type: str | None = None,
+    city: str | None = None,
+    area: str | None = None,
+) -> list[dict] | None:
     """
-    Retrieves all available service providers for a given service_type and city.
+    Retrieves available service providers filtered by service_type, city, and/or area.
+    If a parameter is None, that filter is omitted.
     Uses parameterized queries and filters by available = TRUE.
     """
-    query = text("""
-        SELECT id, name, service_type, city, area, phone, description, available
+    conditions = ["available = TRUE"]
+    params: dict = {}
+
+    if service_type:
+        conditions.append("LOWER(service_type) = LOWER(:service_type)")
+        params["service_type"] = service_type
+
+    if city:
+        conditions.append("LOWER(city) = LOWER(:city)")
+        params["city"] = city
+
+    if area:
+        conditions.append("(LOWER(area) LIKE LOWER(:area_pattern) OR LOWER(description) LIKE LOWER(:area_pattern))")
+        params["area_pattern"] = f"%{area.strip()}%"
+        params["exact_area"] = area.strip()
+        order_clause = "CASE WHEN LOWER(area) = LOWER(:exact_area) THEN 0 WHEN LOWER(area) LIKE LOWER(:area_pattern) THEN 1 ELSE 2 END ASC, id ASC"
+    else:
+        order_clause = "id ASC"
+
+    where_clause = " AND ".join(conditions)
+    query = text(f"""
+        SELECT id, name, service_type, city, area, phone, description, available,
+               source, source_id, latitude, longitude, website, last_updated
         FROM service_providers
-        WHERE LOWER(service_type) = LOWER(:service_type)
-          AND LOWER(city) = LOWER(:city)
-          AND available = TRUE
-        ORDER BY id ASC
+        WHERE {where_clause}
+        ORDER BY {order_clause}
     """)
     try:
         with engine.connect() as connection:
-            result = connection.execute(query, {"service_type": service_type, "city": city})
+            result = connection.execute(query, params)
             return [dict(row) for row in result.mappings()]
     except SQLAlchemyError as exc:
         raw_error = str(exc)
         if DB_PASSWORD and DB_PASSWORD in raw_error:
             raw_error = raw_error.replace(DB_PASSWORD, "******")
-        print(f"❌ Database error while retrieving helpers for {service_type} in {city}: {raw_error}", file=sys.stderr)
+        print(f"❌ Database error in search_service_providers: {raw_error}", file=sys.stderr)
         return None
 
 
-# 9. Database Connection Test Function
+def get_service_providers(service_type: str, city: str) -> list[dict] | None:
+    """
+    Retrieves all available service providers for a given service_type and city.
+    Uses parameterized queries and filters by available = TRUE.
+    """
+    return search_service_providers(service_type=service_type, city=city)
+
+
+def ensure_service_providers_schema() -> bool:
+    """
+    Ensures that the 'service_providers' table contains columns needed for
+    external data sources (e.g. OpenStreetMap), including source, source_id,
+    latitude, longitude, website, and last_updated.
+    Also ensures a unique partial index on source_id to prevent duplicate entries.
+    Safe and idempotent.
+    """
+    statements = [
+        "ALTER TABLE service_providers ADD COLUMN IF NOT EXISTS source VARCHAR(50) DEFAULT 'Manual'",
+        "ALTER TABLE service_providers ADD COLUMN IF NOT EXISTS source_id VARCHAR(100)",
+        "ALTER TABLE service_providers ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION",
+        "ALTER TABLE service_providers ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION",
+        "ALTER TABLE service_providers ADD COLUMN IF NOT EXISTS website TEXT",
+        "ALTER TABLE service_providers ADD COLUMN IF NOT EXISTS last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_service_providers_source_id ON service_providers (source_id) WHERE source_id IS NOT NULL",
+        # Sync the serial sequence to prevent primary-key conflicts when inserting new rows
+        # after rows were inserted manually without consuming the sequence.
+        "SELECT setval(pg_get_serial_sequence('service_providers', 'id'), (SELECT COALESCE(MAX(id), 1) FROM service_providers))",
+    ]
+    try:
+        with engine.begin() as connection:
+            for stmt in statements:
+                connection.execute(text(stmt))
+        return True
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in ensure_service_providers_schema: {raw_error}", file=sys.stderr)
+        return False
+
+
+def upsert_service_provider(provider_data: dict) -> tuple[str, int | None]:
+    """
+    Inserts a new service provider or updates an existing one based on source_id.
+    
+    Returns:
+        tuple[str, int | None]: ("inserted" | "updated" | "skipped" | "error", record_id)
+    """
+    source_id = provider_data.get("source_id")
+    if not source_id:
+        return ("skipped", None)
+
+    select_sql = text("SELECT id FROM service_providers WHERE source_id = :source_id LIMIT 1")
+
+    update_sql = text("""
+        UPDATE service_providers
+        SET name = :name,
+            service_type = :service_type,
+            city = :city,
+            area = COALESCE(:area, area),
+            phone = COALESCE(:phone, phone),
+            description = COALESCE(:description, description),
+            available = :available,
+            source = :source,
+            latitude = COALESCE(:latitude, latitude),
+            longitude = COALESCE(:longitude, longitude),
+            website = COALESCE(:website, website),
+            last_updated = CURRENT_TIMESTAMP
+        WHERE source_id = :source_id
+        RETURNING id
+    """)
+
+    insert_sql = text("""
+        INSERT INTO service_providers (
+            name, service_type, city, area, phone, description,
+            available, source, source_id, latitude, longitude, website,
+            created_at, last_updated
+        ) VALUES (
+            :name, :service_type, :city, :area, :phone, :description,
+            :available, :source, :source_id, :latitude, :longitude, :website,
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        RETURNING id
+    """)
+
+    params = {
+        "name": provider_data.get("name"),
+        "service_type": provider_data.get("service_type"),
+        "city": provider_data.get("city"),
+        "area": provider_data.get("area"),
+        "phone": provider_data.get("phone"),
+        "description": provider_data.get("description"),
+        "available": provider_data.get("available", True),
+        "source": provider_data.get("source", "OpenStreetMap"),
+        "source_id": source_id,
+        "latitude": provider_data.get("latitude"),
+        "longitude": provider_data.get("longitude"),
+        "website": provider_data.get("website"),
+    }
+
+    try:
+        with engine.begin() as connection:
+            existing = connection.execute(select_sql, {"source_id": source_id}).first()
+            if existing:
+                res = connection.execute(update_sql, params)
+                updated_id = res.scalar()
+                return ("updated", updated_id)
+            else:
+                res = connection.execute(insert_sql, params)
+                new_id = res.scalar()
+                return ("inserted", new_id)
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in upsert_service_provider: {raw_error}", file=sys.stderr)
+        return ("error", None)
+
+
+# 9. Database Queries & Management: Vehicle Rental Providers (OpenStreetMap)
+def ensure_vehicle_rental_providers_schema() -> bool:
+    """
+    Ensures that the 'vehicle_rental_providers' table exists with appropriate columns
+    and indexes for real-world vehicle rental businesses (Bike/Car/Both).
+    Idempotent and safe.
+    """
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS vehicle_rental_providers (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            vehicle_type VARCHAR(50) NOT NULL,
+            city VARCHAR(100) NOT NULL,
+            area VARCHAR(100),
+            phone VARCHAR(100),
+            website TEXT,
+            latitude DOUBLE PRECISION,
+            longitude DOUBLE PRECISION,
+            source VARCHAR(50) DEFAULT 'OpenStreetMap',
+            source_id VARCHAR(100),
+            description TEXT,
+            available BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_vehicle_rental_providers_source_id
+        ON vehicle_rental_providers (source_id)
+        WHERE source_id IS NOT NULL
+        """,
+        # Synchronize serial sequence to prevent primary key collision
+        "SELECT setval(pg_get_serial_sequence('vehicle_rental_providers', 'id'), (SELECT COALESCE(MAX(id), 1) FROM vehicle_rental_providers))",
+    ]
+    try:
+        with engine.begin() as connection:
+            for stmt in statements:
+                connection.execute(text(stmt))
+        return True
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in ensure_vehicle_rental_providers_schema: {raw_error}", file=sys.stderr)
+        return False
+
+
+def upsert_vehicle_rental_provider(provider_data: dict) -> tuple[str, int | None]:
+    """
+    Inserts a new vehicle rental provider or updates an existing one based on source_id.
+
+    Returns:
+        tuple[str, int | None]: ("inserted" | "updated" | "skipped" | "error", record_id)
+    """
+    source_id = provider_data.get("source_id")
+    if not source_id:
+        return ("skipped", None)
+
+    select_sql = text("SELECT id FROM vehicle_rental_providers WHERE source_id = :source_id LIMIT 1")
+
+    update_sql = text("""
+        UPDATE vehicle_rental_providers
+        SET name = :name,
+            vehicle_type = :vehicle_type,
+            city = :city,
+            area = COALESCE(:area, area),
+            phone = COALESCE(:phone, phone),
+            description = COALESCE(:description, description),
+            available = :available,
+            source = :source,
+            latitude = COALESCE(:latitude, latitude),
+            longitude = COALESCE(:longitude, longitude),
+            website = COALESCE(:website, website),
+            last_updated = CURRENT_TIMESTAMP
+        WHERE source_id = :source_id
+        RETURNING id
+    """)
+
+    insert_sql = text("""
+        INSERT INTO vehicle_rental_providers (
+            name, vehicle_type, city, area, phone, description,
+            available, source, source_id, latitude, longitude, website,
+            created_at, last_updated
+        ) VALUES (
+            :name, :vehicle_type, :city, :area, :phone, :description,
+            :available, :source, :source_id, :latitude, :longitude, :website,
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        RETURNING id
+    """)
+
+    params = {
+        "name": provider_data.get("name"),
+        "vehicle_type": provider_data.get("vehicle_type"),
+        "city": provider_data.get("city"),
+        "area": provider_data.get("area"),
+        "phone": provider_data.get("phone"),
+        "description": provider_data.get("description"),
+        "available": provider_data.get("available", True),
+        "source": provider_data.get("source", "OpenStreetMap"),
+        "source_id": source_id,
+        "latitude": provider_data.get("latitude"),
+        "longitude": provider_data.get("longitude"),
+        "website": provider_data.get("website"),
+    }
+
+    try:
+        with engine.begin() as connection:
+            existing = connection.execute(select_sql, {"source_id": source_id}).first()
+            if existing:
+                res = connection.execute(update_sql, params)
+                updated_id = res.scalar()
+                return ("updated", updated_id)
+            else:
+                res = connection.execute(insert_sql, params)
+                new_id = res.scalar()
+                return ("inserted", new_id)
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in upsert_vehicle_rental_provider: {raw_error}", file=sys.stderr)
+        return ("error", None)
+
+
+def search_vehicle_rental_providers(
+    city: str | None = None,
+    vehicle_type: str | None = None,
+    keyword: str | None = None,
+    area: str | None = None,
+) -> list[dict] | None:
+    """
+    Searches 'vehicle_rental_providers' filtered by city, vehicle_type (Bike, Car, Both),
+    optional keyword, and optional area.
+    If vehicle_type is 'Bike', matches vehicle_type IN ('Bike', 'Both').
+    If vehicle_type is 'Car', matches vehicle_type IN ('Car', 'Both').
+    Uses parameterized SQL queries safely to prevent SQL injection.
+    """
+    conditions = ["available = TRUE"]
+    params: dict = {}
+
+    if city:
+        conditions.append("LOWER(city) = LOWER(:city)")
+        params["city"] = city
+
+    if vehicle_type and vehicle_type.upper() != "ALL":
+        conditions.append("(LOWER(vehicle_type) = LOWER(:vtype) OR LOWER(vehicle_type) = 'both')")
+        params["vtype"] = vehicle_type
+
+    if keyword and keyword.lower() not in ["bike", "car", "vehicle", "rental"]:
+        conditions.append("(LOWER(name) LIKE LOWER(:kw) OR LOWER(description) LIKE LOWER(:kw) OR LOWER(area) LIKE LOWER(:kw))")
+        params["kw"] = f"%{keyword}%"
+
+    if area:
+        conditions.append("(LOWER(area) LIKE LOWER(:area_pattern) OR LOWER(description) LIKE LOWER(:area_pattern))")
+        params["area_pattern"] = f"%{area.strip()}%"
+        params["exact_area"] = area.strip()
+        order_clause = "CASE WHEN LOWER(area) = LOWER(:exact_area) THEN 0 WHEN LOWER(area) LIKE LOWER(:area_pattern) THEN 1 ELSE 2 END ASC, id ASC"
+    else:
+        order_clause = "id ASC"
+
+    where_clause = " AND ".join(conditions)
+    query = text(f"""
+        SELECT id, name, vehicle_type, city, area, phone, website,
+               latitude, longitude, source, source_id, description, available, last_updated
+        FROM vehicle_rental_providers
+        WHERE {where_clause}
+        ORDER BY {order_clause}
+    """)
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(query, params)
+            return [dict(row) for row in result.mappings()]
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in search_vehicle_rental_providers: {raw_error}", file=sys.stderr)
+        return None
+
+
+# 9. Database Functions: Rental Item Providers (Appliances & Furniture Businesses)
+def ensure_rental_item_providers_schema() -> bool:
+    """
+    Creates the 'rental_item_providers' table and its partial unique index
+    if they do not already exist, and synchronizes the primary key sequence.
+    """
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS rental_item_providers (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(150) NOT NULL,
+            category VARCHAR(50) NOT NULL,
+            city VARCHAR(50) NOT NULL,
+            area VARCHAR(100),
+            phone VARCHAR(50),
+            website VARCHAR(200),
+            latitude DOUBLE PRECISION,
+            longitude DOUBLE PRECISION,
+            source VARCHAR(50) DEFAULT 'OpenStreetMap',
+            source_id VARCHAR(100),
+            description TEXT,
+            available BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_rental_item_providers_source_id
+        ON rental_item_providers (source_id)
+        WHERE source_id IS NOT NULL
+        """,
+        # Synchronize serial sequence to prevent primary key collision
+        "SELECT setval(pg_get_serial_sequence('rental_item_providers', 'id'), (SELECT COALESCE(MAX(id), 1) FROM rental_item_providers))",
+    ]
+    try:
+        with engine.begin() as connection:
+            for stmt in statements:
+                connection.execute(text(stmt))
+        return True
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in ensure_rental_item_providers_schema: {raw_error}", file=sys.stderr)
+        return False
+
+
+def upsert_rental_item_provider(provider_data: dict) -> tuple[str, int | None]:
+    """
+    Inserts a new rental item provider or updates an existing one based on source_id.
+
+    Returns:
+        tuple[str, int | None]: ("inserted" | "updated" | "skipped" | "error", record_id)
+    """
+    source_id = provider_data.get("source_id")
+    if not source_id:
+        return ("skipped", None)
+
+    select_sql = text("SELECT id FROM rental_item_providers WHERE source_id = :source_id LIMIT 1")
+
+    update_sql = text("""
+        UPDATE rental_item_providers
+        SET name = :name,
+            category = :category,
+            city = :city,
+            area = COALESCE(:area, area),
+            phone = COALESCE(:phone, phone),
+            description = COALESCE(:description, description),
+            available = :available,
+            source = :source,
+            latitude = COALESCE(:latitude, latitude),
+            longitude = COALESCE(:longitude, longitude),
+            website = COALESCE(:website, website),
+            last_updated = CURRENT_TIMESTAMP
+        WHERE source_id = :source_id
+        RETURNING id
+    """)
+
+    insert_sql = text("""
+        INSERT INTO rental_item_providers (
+            name, category, city, area, phone, description,
+            available, source, source_id, latitude, longitude, website,
+            created_at, last_updated
+        ) VALUES (
+            :name, :category, :city, :area, :phone, :description,
+            :available, :source, :source_id, :latitude, :longitude, :website,
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        RETURNING id
+    """)
+
+    params = {
+        "name": provider_data.get("name"),
+        "category": provider_data.get("category"),
+        "city": provider_data.get("city"),
+        "area": provider_data.get("area"),
+        "phone": provider_data.get("phone"),
+        "description": provider_data.get("description"),
+        "available": provider_data.get("available", True),
+        "source": provider_data.get("source", "OpenStreetMap"),
+        "source_id": source_id,
+        "latitude": provider_data.get("latitude"),
+        "longitude": provider_data.get("longitude"),
+        "website": provider_data.get("website"),
+    }
+
+    try:
+        with engine.begin() as connection:
+            existing = connection.execute(select_sql, {"source_id": source_id}).first()
+            if existing:
+                res = connection.execute(update_sql, params)
+                updated_id = res.scalar()
+                return ("updated", updated_id)
+            else:
+                res = connection.execute(insert_sql, params)
+                new_id = res.scalar()
+                return ("inserted", new_id)
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in upsert_rental_item_provider: {raw_error}", file=sys.stderr)
+        return ("error", None)
+
+
+def search_rental_item_providers(
+    city: str | None = None,
+    category: str | None = None,
+    keyword: str | None = None,
+    area: str | None = None,
+) -> list[dict] | None:
+    """
+    Searches 'rental_item_providers' filtered by city, category (Appliance, Furniture, Both),
+    optional keyword, and optional area.
+    If category is 'Appliance', matches category IN ('Appliance', 'Both').
+    If category is 'Furniture', matches category IN ('Furniture', 'Both').
+    Uses parameterized SQL queries safely to prevent SQL injection.
+    """
+    conditions = ["available = TRUE"]
+    params: dict = {}
+
+    if city:
+        conditions.append("LOWER(city) = LOWER(:city)")
+        params["city"] = city
+
+    if category and category.upper() != "ALL":
+        conditions.append("(LOWER(category) = LOWER(:category) OR LOWER(category) = 'both')")
+        params["category"] = category
+
+    if keyword and keyword.lower() not in ["rental", "rent", "furniture", "appliance", "item"]:
+        conditions.append("(LOWER(name) LIKE LOWER(:kw) OR LOWER(description) LIKE LOWER(:kw) OR LOWER(area) LIKE LOWER(:kw))")
+        params["kw"] = f"%{keyword}%"
+
+    if area:
+        conditions.append("(LOWER(area) LIKE LOWER(:area_pattern) OR LOWER(description) LIKE LOWER(:area_pattern))")
+        params["area_pattern"] = f"%{area.strip()}%"
+        params["exact_area"] = area.strip()
+        order_clause = "CASE WHEN LOWER(area) = LOWER(:exact_area) THEN 0 WHEN LOWER(area) LIKE LOWER(:area_pattern) THEN 1 ELSE 2 END ASC, id ASC"
+    else:
+        order_clause = "id ASC"
+
+    where_clause = " AND ".join(conditions)
+    query = text(f"""
+        SELECT id, name, category, city, area, phone, website,
+               latitude, longitude, source, source_id, description, available, last_updated
+        FROM rental_item_providers
+        WHERE {where_clause}
+        ORDER BY {order_clause}
+    """)
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(query, params)
+            return [dict(row) for row in result.mappings()]
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in search_rental_item_providers: {raw_error}", file=sys.stderr)
+        return None
+
+
+# 10. Database Functions: Property Places (Hostels, PGs, Apartments, Accommodations)
+def ensure_property_places_schema() -> bool:
+    """
+    Creates the 'property_places' table and its partial unique index
+    if they do not already exist, and synchronizes the primary key sequence.
+    """
+    statements = [
+        """
+        CREATE TABLE IF NOT EXISTS property_places (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(150) NOT NULL,
+            property_type VARCHAR(50) NOT NULL,
+            city VARCHAR(50) NOT NULL,
+            area VARCHAR(100),
+            address TEXT,
+            phone VARCHAR(50),
+            website VARCHAR(200),
+            latitude DOUBLE PRECISION,
+            longitude DOUBLE PRECISION,
+            source VARCHAR(50) DEFAULT 'OpenStreetMap',
+            source_id VARCHAR(100),
+            description TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_property_places_source_id
+        ON property_places (source_id)
+        WHERE source_id IS NOT NULL
+        """,
+        # Synchronize serial sequence to prevent primary key collision
+        "SELECT setval(pg_get_serial_sequence('property_places', 'id'), (SELECT COALESCE(MAX(id), 1) FROM property_places))",
+    ]
+    try:
+        with engine.begin() as connection:
+            for stmt in statements:
+                connection.execute(text(stmt))
+        return True
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in ensure_property_places_schema: {raw_error}", file=sys.stderr)
+        return False
+
+
+def upsert_property_place(place_data: dict) -> tuple[str, int | None]:
+    """
+    Inserts a new property place or updates an existing one based on source_id.
+
+    Returns:
+        tuple[str, int | None]: ("inserted" | "updated" | "skipped" | "error", record_id)
+    """
+    source_id = place_data.get("source_id")
+    if not source_id:
+        return ("skipped", None)
+
+    select_sql = text("SELECT id FROM property_places WHERE source_id = :source_id LIMIT 1")
+
+    update_sql = text("""
+        UPDATE property_places
+        SET name = :name,
+            property_type = :property_type,
+            city = :city,
+            area = COALESCE(:area, area),
+            address = COALESCE(:address, address),
+            phone = COALESCE(:phone, phone),
+            description = COALESCE(:description, description),
+            source = :source,
+            latitude = COALESCE(:latitude, latitude),
+            longitude = COALESCE(:longitude, longitude),
+            website = COALESCE(:website, website),
+            last_updated = CURRENT_TIMESTAMP
+        WHERE source_id = :source_id
+        RETURNING id
+    """)
+
+    insert_sql = text("""
+        INSERT INTO property_places (
+            name, property_type, city, area, address, phone, description,
+            source, source_id, latitude, longitude, website,
+            created_at, last_updated
+        ) VALUES (
+            :name, :property_type, :city, :area, :address, :phone, :description,
+            :source, :source_id, :latitude, :longitude, :website,
+            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+        )
+        RETURNING id
+    """)
+
+    params = {
+        "name": place_data.get("name"),
+        "property_type": place_data.get("property_type"),
+        "city": place_data.get("city"),
+        "area": place_data.get("area"),
+        "address": place_data.get("address"),
+        "phone": place_data.get("phone"),
+        "description": place_data.get("description"),
+        "source": place_data.get("source", "OpenStreetMap"),
+        "source_id": source_id,
+        "latitude": place_data.get("latitude"),
+        "longitude": place_data.get("longitude"),
+        "website": place_data.get("website"),
+    }
+
+    try:
+        with engine.begin() as connection:
+            existing = connection.execute(select_sql, {"source_id": source_id}).first()
+            if existing:
+                res = connection.execute(update_sql, params)
+                updated_id = res.scalar()
+                return ("updated", updated_id)
+            else:
+                res = connection.execute(insert_sql, params)
+                new_id = res.scalar()
+                return ("inserted", new_id)
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in upsert_property_place: {raw_error}", file=sys.stderr)
+        return ("error", None)
+
+
+def search_property_places(
+    city: str | None = None,
+    property_type: str | None = None,
+    keyword: str | None = None,
+    area: str | None = None,
+) -> list[dict] | None:
+    """
+    Searches 'property_places' filtered by city, property_type (House, Flat, PG, Hostel),
+    optional keyword, and optional area.
+    Uses parameterized SQL queries safely to prevent SQL injection.
+    """
+    conditions = []
+    params: dict = {}
+
+    if city:
+        conditions.append("LOWER(city) = LOWER(:city)")
+        params["city"] = city
+
+    if property_type and property_type.upper() != "ALL":
+        conditions.append("LOWER(property_type) = LOWER(:property_type)")
+        params["property_type"] = property_type
+
+    if keyword and keyword.lower() not in ["property", "place", "accommodation", "room"]:
+        conditions.append("(LOWER(name) LIKE LOWER(:kw) OR LOWER(description) LIKE LOWER(:kw) OR LOWER(area) LIKE LOWER(:kw) OR LOWER(address) LIKE LOWER(:kw))")
+        params["kw"] = f"%{keyword}%"
+
+    if area:
+        conditions.append("(LOWER(area) LIKE LOWER(:area_pattern) OR LOWER(address) LIKE LOWER(:area_pattern) OR LOWER(description) LIKE LOWER(:area_pattern))")
+        params["area_pattern"] = f"%{area.strip()}%"
+        params["exact_area"] = area.strip()
+        order_clause = "CASE WHEN LOWER(area) = LOWER(:exact_area) THEN 0 WHEN LOWER(area) LIKE LOWER(:area_pattern) THEN 1 ELSE 2 END ASC, id ASC"
+    else:
+        order_clause = "id ASC"
+
+    where_clause = " AND ".join(conditions) if conditions else "1=1"
+    query = text(f"""
+        SELECT id, name, property_type, city, area, address, phone, website,
+               latitude, longitude, source, source_id, description, last_updated
+        FROM property_places
+        WHERE {where_clause}
+        ORDER BY {order_clause}
+    """)
+    try:
+        with engine.connect() as connection:
+            result = connection.execute(query, params)
+            return [dict(row) for row in result.mappings()]
+    except SQLAlchemyError as exc:
+        raw_error = str(exc)
+        if DB_PASSWORD and DB_PASSWORD in raw_error:
+            raw_error = raw_error.replace(DB_PASSWORD, "******")
+        print(f"❌ Database error in search_property_places: {raw_error}", file=sys.stderr)
+        return None
+
+
+# 11. Database Connection Test Function
 def test_connection() -> bool:
     """
     Tests whether Python can successfully connect to the PostgreSQL database.
